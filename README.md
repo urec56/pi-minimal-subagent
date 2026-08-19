@@ -94,6 +94,10 @@ This is a minimal escape hatch for env-configured extensions. It is not per-agen
 
 The extension does not block recursive usage. If a user loads this extension inside a subagent, nested subagent calls are allowed.
 
+### Subagent environment markers
+
+Every spawned child always receives `PI_IS_SUBAGENT=1`, and — when the parent session id is available — `PI_SUBAGENT_PARENT_SESSION=<parent session id>`. These follow the conventions expected by `@gotgenes/pi-permission-system` (and `pi-agent-router`): they let a child running without a UI detect that it is a subagent and forward `ask` permission prompts to the parent session's UI instead of auto-denying them. The variables are set after the configured `environment` merge, so they cannot be overridden or stripped by settings. Nested subagent calls re-derive the marker from their own session, so each level points at its direct parent.
+
 ## Development
 
 From this directory:

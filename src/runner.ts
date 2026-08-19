@@ -24,6 +24,8 @@ export interface RunSubagentOptions {
   agent: AgentConfig;
   task: string;
   settings: Settings;
+  /** Parent session id, used to advertise PI_SUBAGENT_PARENT_SESSION to the child. */
+  parentSessionId?: string | null;
   signal?: AbortSignal;
   onUpdate?: OnUpdateCallback;
   makeDetails: (results: SubagentResult[]) => SubagentDetails;
@@ -82,7 +84,7 @@ function mergeExtensions(settings: Settings, agent: AgentConfig): string[] {
   return [...new Set([...(settings.extensions ?? []), ...(agent.extensions ?? [])])];
 }
 
-function buildChildEnv(settings: Settings): NodeJS.ProcessEnv {
+function buildChildEnv(settings: Settings, parentSessionId?: string | null): NodeJS.ProcessEnv {
   const inheritedEnv: NodeJS.ProcessEnv = { ...process.env };
 
   if (isWindows) {
@@ -93,13 +95,19 @@ function buildChildEnv(settings: Settings): NodeJS.ProcessEnv {
       }
       inheritedEnv[configuredKey] = configuredValue;
     }
-    return inheritedEnv;
+  } else {
+    Object.assign(inheritedEnv, settings.environment);
   }
 
-  return {
-    ...inheritedEnv,
-    ...settings.environment,
-  };
+  // Subagent markers so extensions in the child (e.g. pi-permission-system)
+  // can detect the subagent context and forward `ask` prompts to the parent UI.
+  inheritedEnv.PI_IS_SUBAGENT = "1";
+  const trimmedParentSessionId = parentSessionId?.trim();
+  if (trimmedParentSessionId) {
+    inheritedEnv.PI_SUBAGENT_PARENT_SESSION = trimmedParentSessionId;
+  }
+
+  return inheritedEnv;
 }
 
 function buildPiArgs(opts: {
@@ -181,7 +189,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
         cwd,
         shell: false,
         stdio: ["pipe", "pipe", "pipe"],
-        env: buildChildEnv(settings),
+        env: buildChildEnv(settings, opts.parentSessionId),
       });
 
       proc.stdin.on("error", () => {

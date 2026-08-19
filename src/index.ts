@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { discoverAgents } from "./agents.ts";
 import { renderSubagentCall, renderSubagentResult } from "./render.ts";
@@ -11,6 +11,21 @@ import {
   emptyUsage,
   isResultError,
 } from "./types.ts";
+
+/**
+ * Best-effort read of the current (parent) session id.
+ * Passed to the child as PI_SUBAGENT_PARENT_SESSION so extensions like
+ * pi-permission-system can forward `ask` prompts to the parent UI.
+ */
+function getParentSessionId(ctx: ExtensionContext): string | null {
+  try {
+    const sessionId = ctx.sessionManager.getSessionId();
+    if (typeof sessionId === "string" && sessionId.trim()) return sessionId.trim();
+  } catch {
+    // sessionManager unavailable — forwarding degrades gracefully.
+  }
+  return null;
+}
 
 const SubagentParams = Type.Object({
   agent: Type.String({
@@ -71,11 +86,13 @@ export default function (pi: ExtensionAPI) {
       }
 
       const settings = resolveSettings(ctx.cwd);
+      const parentSessionId = getParentSessionId(ctx);
       const result = await runSubagent({
         cwd: ctx.cwd,
         agent,
         task: params.task,
         settings,
+        parentSessionId,
         signal,
         onUpdate,
         makeDetails: (results) => makeDetails(results, {
