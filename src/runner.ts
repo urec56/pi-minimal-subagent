@@ -39,10 +39,14 @@ function resolvePiSpawn(): { command: string; prefixArgs: string[] } {
   return { command: process.execPath, prefixArgs: [] };
 }
 
-function writeSystemPromptToTempFile(systemPrompt: string): { dir: string; filePath: string } {
+function writeSystemPromptToTempFile(systemPrompt: string, agentName?: string): { dir: string; filePath: string } {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minimal-subagent-"));
   const filePath = path.join(tmpDir, "system-prompt.md");
-  fs.writeFileSync(filePath, systemPrompt, { encoding: "utf-8", mode: 0o600 });
+  // Advertise the active agent via the <active_agent> tag convention so
+  // extensions (e.g. pi-permission-system) can resolve the agent name for
+  // per-agent policy and attribute forwarded permission prompts.
+  const tag = agentName ? `<active_agent name="${agentName.replace(/"/g, "'")}">\n\n` : "";
+  fs.writeFileSync(filePath, tag + systemPrompt, { encoding: "utf-8", mode: 0o600 });
   return { dir: tmpDir, filePath };
 }
 
@@ -170,7 +174,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   let tmpDir: string | null = null;
   let systemPromptPath: string | null = null;
   if (agent.systemPrompt.trim()) {
-    const tmp = writeSystemPromptToTempFile(agent.systemPrompt);
+    const tmp = writeSystemPromptToTempFile(agent.systemPrompt, agent.name);
     tmpDir = tmp.dir;
     systemPromptPath = tmp.filePath;
   }
