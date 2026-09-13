@@ -88,6 +88,13 @@ function readSettings(filePath: string, baseDir: string): Partial<Settings> {
     settings.environment = environment;
   }
 
+  if (typeof config.activeAgent === "string" && config.activeAgent.trim()) {
+    settings.activeAgent = config.activeAgent.trim();
+  } else if (config.activeAgent === null) {
+    // Explicit clear: overrides an inherited global value via the spread merge.
+    settings.activeAgent = null;
+  }
+
   return settings;
 }
 

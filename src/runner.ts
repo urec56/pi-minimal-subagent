@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import { buildActiveAgentBlock } from "./agents.ts";
 import { getSubagentProgressText, processPiJsonLine } from "./runner-events.js";
 import {
   type AgentConfig,
@@ -39,14 +40,13 @@ function resolvePiSpawn(): { command: string; prefixArgs: string[] } {
   return { command: process.execPath, prefixArgs: [] };
 }
 
-function writeSystemPromptToTempFile(systemPrompt: string, agentName?: string): { dir: string; filePath: string } {
+function writeSystemPromptToTempFile(agent: AgentConfig): { dir: string; filePath: string } {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minimal-subagent-"));
   const filePath = path.join(tmpDir, "system-prompt.md");
   // Advertise the active agent via the <active_agent> tag convention so
   // extensions (e.g. pi-permission-system) can resolve the agent name for
   // per-agent policy and attribute forwarded permission prompts.
-  const tag = agentName ? `<active_agent name="${agentName.replace(/"/g, "'")}">\n\n` : "";
-  fs.writeFileSync(filePath, tag + systemPrompt, { encoding: "utf-8", mode: 0o600 });
+  fs.writeFileSync(filePath, buildActiveAgentBlock(agent), { encoding: "utf-8", mode: 0o600 });
   return { dir: tmpDir, filePath };
 }
 
@@ -174,7 +174,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   let tmpDir: string | null = null;
   let systemPromptPath: string | null = null;
   if (agent.systemPrompt.trim()) {
-    const tmp = writeSystemPromptToTempFile(agent.systemPrompt, agent.name);
+    const tmp = writeSystemPromptToTempFile(agent);
     tmpDir = tmp.dir;
     systemPromptPath = tmp.filePath;
   }

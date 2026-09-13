@@ -9,6 +9,17 @@ export interface AgentDiscoveryResult {
   projectAgentsDir: string | null;
 }
 
+/**
+ * Build the `<active_agent>` marker plus system prompt body for a named agent.
+ * Shared by subagent child runs (written to the --append-system-prompt file)
+ * and main-session injection, so both contexts carry identical agent identity
+ * that extensions (e.g. pi-permission-system) can resolve per-agent policy from.
+ */
+export function buildActiveAgentBlock(agent: AgentConfig): string {
+  const name = agent.name.replace(/"/g, "'");
+  return `<active_agent name="${name}">\n\n${agent.systemPrompt}`;
+}
+
 function parseList(value: unknown, baseDir: string, resolvePaths = false): string[] | undefined {
   const raw = Array.isArray(value)
     ? value

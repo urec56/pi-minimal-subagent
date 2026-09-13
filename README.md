@@ -69,7 +69,8 @@ Global settings live in Pi's agent settings file (usually `~/.pi/agent/settings.
     "environment": {
       "MY_EXTENSION_MODE": "subagent",
       "SERVICE_BASE_URL": "https://example.test"
-    }
+    },
+    "activeAgent": null
   }
 }
 ```
@@ -91,6 +92,27 @@ Configured `environment` values apply to all subagent runs in the resolved globa
 Subagents still inherit the parent Pi process environment. The configured `environment` values are merged on top of that inherited environment, so configured names add new variables or override inherited values, while omitted names continue to inherit normally. If `environment` is omitted, subagents keep today's inherited-environment behavior.
 
 This is a minimal escape hatch for env-configured extensions. It is not per-agent configuration, not per-invocation configuration, not an isolated environment mode, and not a secret masking, auditing, or secrets-management system. Configured values affect spawned subagents only; they do not change the parent/main agent environment.
+
+### Active agent (main session)
+
+By default the main session runs with Pi's normal prompt and reaches configured agents through `subagent` calls. If you want the main session to answer directly as a specific agent (for example, talk to your searcher without an orchestrator hop), activate it:
+
+```jsonc
+{ "pi-minimal-subagent": { "activeAgent": "searcher" } }
+```
+
+`activeAgent` is tri-state like `model`: omitted inherits the global value, a string activates that agent, and explicit `null` disables an inherited value. The referenced agent must exist in `~/.pi/agent/agents/*.md` or `.pi/agents/*.md`; project agents override user agents with the same name.
+
+When active on every run of the main session, the agent's system prompt is **appended** to Pi's assembled prompt — exactly like subagent runs receive it via `--append-system-prompt` (including the `<active_agent name="...">` marker). Nothing else changes: tools, model, and session behavior stay as configured.
+
+The selection can also be made per session with the `/agent` command (argument autocomplete lists all discovered agents plus `none`):
+
+- `/agent searcher` — this session answers as `searcher`, overriding settings for the current process/session;
+- `/agent searcher --model` — additionally switches the session model to the agent's frontmatter `model:` (explicit request only; without `--model` the model is never touched). References are resolved like pi's `--model`: `provider/modelId`, a bare model id, or a unique partial match; an optional `:thinkingLevel` suffix is applied too;
+- `/agent none` — disable for this session even if settings configure one;
+- `/agent` (no argument) — show the currently effective agent and the list of available agents.
+
+The active agent is shown in the status line as `active-agent: <name>`. Subagent child processes never receive a second injection (`PI_IS_SUBAGENT=1` disables it), so nested runs keep exactly one persona.
 
 The extension does not block recursive usage. If a user loads this extension inside a subagent, nested subagent calls are allowed.
 

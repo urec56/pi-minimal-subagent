@@ -19,6 +19,11 @@ export interface Settings {
   model: string | null;
   extensions: string[] | null;
   environment: Record<string, string>;
+  /**
+   * Agent name whose system prompt is appended to the main session's prompt
+   * ("active agent" mode). `null` explicitly disables an inherited value.
+   */
+  activeAgent?: string | null;
 }
 
 export interface UsageStats {
