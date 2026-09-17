@@ -100,6 +100,14 @@ export default function (pi: ExtensionAPI) {
         task: params.task,
         settings,
         parentSessionId,
+        resolveContextWindow: (provider, modelId) => {
+          try {
+            return ctx.modelRegistry.find(provider, modelId)?.contextWindow;
+          } catch {
+            // Registry unavailable — the context indicator degrades gracefully.
+            return undefined;
+          }
+        },
         signal,
         onUpdate,
         makeDetails: (results) => makeDetails(results, {

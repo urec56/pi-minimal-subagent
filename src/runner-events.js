@@ -211,7 +211,10 @@ function addAssistantMessage(result, message) {
     result.usage.cacheRead += usage.cacheRead || 0;
     result.usage.cacheWrite += usage.cacheWrite || 0;
     result.usage.cost += usageCost(usage.cost);
-    result.usage.contextTokens = usage.totalTokens || 0;
+    // Mirror pi's calculateContextTokens: native totalTokens when available,
+    // otherwise the sum of components.
+    result.usage.contextTokens =
+      usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
   }
 
   return true;

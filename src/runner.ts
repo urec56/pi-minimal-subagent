@@ -27,6 +27,11 @@ export interface RunSubagentOptions {
   settings: Settings;
   /** Parent session id, used to advertise PI_SUBAGENT_PARENT_SESSION to the child. */
   parentSessionId?: string | null;
+  /**
+   * Resolves a model's context window from the parent session's registry
+   * (built-in + custom models). Used for the "10.8%/262k"-style indicator.
+   */
+  resolveContextWindow?: (provider: string, modelId: string) => number | undefined;
   signal?: AbortSignal;
   onUpdate?: OnUpdateCallback;
   makeDetails: (results: SubagentResult[]) => SubagentDetails;
@@ -240,9 +245,25 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
         resolve(code);
       };
 
+      // Best-effort one-shot resolution of the model's context window once
+      // provider/model are known from child events. Undefined means "not in
+      // registry" and is cached as-is so we do not re-lookup on every line.
+      const maybeResolveContextWindow = () => {
+        if (!opts.resolveContextWindow || result.contextWindow !== undefined) return;
+        if (!result.provider || !result.model) return;
+        try {
+          result.contextWindow = opts.resolveContextWindow(result.provider, result.model);
+        } catch {
+          // Keep it unresolved — the context indicator is best-effort.
+        }
+      };
+
       const flushLine = (line: string) => {
         rememberStdoutLine(result, line);
-        if (processPiJsonLine(line, result)) emitUpdate();
+        if (processPiJsonLine(line, result)) {
+          maybeResolveContextWindow();
+          emitUpdate();
+        }
         maybeFinishFromAgentEnd();
       };
 

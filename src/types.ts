@@ -76,6 +76,8 @@ export interface SubagentResult {
   response: string;
   stderr: string;
   usage: UsageStats;
+  /** Context window (max tokens) of the subagent's model, when resolvable. */
+  contextWindow?: number;
   provider?: string;
   model?: string;
   stopReason?: string;

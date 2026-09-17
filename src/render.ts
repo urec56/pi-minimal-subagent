@@ -43,7 +43,29 @@ function fmtModelProvider(result: SubagentResult): string {
   return model || provider || "";
 }
 
-function fmtUsage(result: SubagentResult): string {
+/**
+ * Context fill indicator, mirroring pi's footer: `10.8%/262k` where the
+ * percent is context tokens over the model's context window. Shows `?/window`
+ * until the first LLM response provides usage data; colored warning above 70%
+ * and error above 90%.
+ */
+function fmtContextFill(result: SubagentResult, fg: (color: any, text: string) => string): string {
+  const window = typeof result.contextWindow === "number" && result.contextWindow > 0
+    ? result.contextWindow
+    : undefined;
+  if (!window) return "";
+
+  const tokens = Number.isFinite(result.usage?.contextTokens) ? result.usage!.contextTokens! : 0;
+  if (tokens <= 0) return `?/${fmtCount(window)}`;
+
+  const percent = (tokens / window) * 100;
+  const display = `${percent.toFixed(1)}%/${fmtCount(window)}`;
+  if (percent > 90) return fg("error", display);
+  if (percent > 70) return fg("warning", display);
+  return display;
+}
+
+function fmtUsage(result: SubagentResult, fg: (color: any, text: string) => string): string {
   const usage = result.usage;
   if (!usage) return "";
 
@@ -54,6 +76,8 @@ function fmtUsage(result: SubagentResult): string {
   if (usage.cacheRead) parts.push(`R${fmtCount(usage.cacheRead)}`);
   if (usage.cacheWrite) parts.push(`W${fmtCount(usage.cacheWrite)}`);
   if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+  const contextFill = fmtContextFill(result, fg);
+  if (contextFill) parts.push(contextFill);
   const modelProvider = fmtModelProvider(result);
   if (modelProvider) parts.push(modelProvider);
   return parts.join(" ");
@@ -224,7 +248,7 @@ export function renderSubagentResult(toolResult: any, { expanded }: { expanded: 
   const currentStatus = status(result);
   const icon = statusIcon(result, fg);
   const finalOutput = getFinalAssistantText(result.messages);
-  const usage = fmtUsage(result);
+  const usage = fmtUsage(result, fg);
   const activityText = renderActivityLines(result, fg, expanded ? undefined : COLLAPSED_ACTIVITY_COUNT);
   const mdTheme = getMarkdownTheme();
 
