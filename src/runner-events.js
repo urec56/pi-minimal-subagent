@@ -5,6 +5,8 @@
 const MAX_TOOL_PREVIEW_CHARS = 1200;
 const MAX_TOOL_ARGS_PREVIEW_CHARS = 300;
 const MAX_INLINE_ERROR_PREVIEW_CHARS = 160;
+const MAX_MESSAGE_ACTIVITY_CHARS = 500;
+const MAX_MESSAGE_PROGRESS_CHARS = 160;
 const MAX_STORED_TOOL_EXECUTIONS = 25;
 const MAX_STORED_ACTIVITIES = 50;
 
@@ -388,6 +390,45 @@ function syncThinkingState(result, activity) {
   return result.thinking;
 }
 
+/**
+ * True when assistant-side activity has already been recorded (an LLM response
+ * or a tool/thinking event). The initial task is emitted by the child as
+ * user-role message(s) before any of those; steering messages delivered
+ * mid-run always arrive after.
+ */
+function hasSeenAssistantActivity(result) {
+  if (Array.isArray(result.messages) && result.messages.length > 0) return true;
+  const activities = Array.isArray(result.activities) ? result.activities : [];
+  for (const activity of activities) {
+    if (activity?.type === "thinking" || activity?.type === "tool") return true;
+  }
+  return false;
+}
+
+/**
+ * A user-role message that arrives after the subagent has already produced
+ * assistant-side activity is a steering message delivered mid-run
+ * (/subagent-msg). Record it as a "message" activity so it shows up in the
+ * activity list at its delivery point. The initial task batch (emitted before
+ * any assistant activity) and exact re-emissions of the task are skipped; a
+ * steer queued before the first response is indistinguishable from the task
+ * batch, so it is not recorded (it still works, just without an activity line).
+ */
+function addUserMessageActivity(result, message) {
+  if (!message || typeof message !== "object") return false;
+  if (!hasSeenAssistantActivity(result)) return false;
+  const text = extractTextFromContent(message.content).trim();
+  if (!text) return false;
+  if (typeof result.task === "string" && text === result.task) return false;
+  addActivity(result, {
+    type: "message",
+    status: "completed",
+    text: truncateMiddle(text, MAX_MESSAGE_ACTIVITY_CHARS),
+    activityOrder: nextActivityOrder(result),
+  });
+  return true;
+}
+
 function ensureToolExecutions(result) {
   if (!Array.isArray(result.toolExecutions)) result.toolExecutions = [];
   return result.toolExecutions;
@@ -512,8 +553,13 @@ export function processPiEvent(event, result) {
     case "message_update":
       return processMessageUpdateEvent(event, result);
 
-    case "message_end":
-      return addMessageUsage(result, event.message);
+    case "message_end": {
+      const isUserMessage = event.message?.role === "user";
+      return (
+        addMessageUsage(result, event.message) ||
+        (isUserMessage && addUserMessageActivity(result, event.message))
+      );
+    }
 
     case "turn_end": {
       let changed = false;
@@ -522,9 +568,36 @@ export function processPiEvent(event, result) {
       return changed;
     }
 
-    case "agent_end":
-      result.sawAgentEnd = true;
+    case "agent_end": {
+      // willRetry means one low-level run ended but the session continues
+      // (automatic retry) — not a completion candidate.
+      if (!event.willRetry) result.sawAgentEnd = true;
       return addMessagesUsage(result, event.messages);
+    }
+
+    case "agent_settled":
+      // Emitted after the full session-level run settles: no automatic retry,
+      // compaction retry, or queued continuation remains. Safest completion
+      // signal in RPC mode.
+      result.sawAgentSettled = true;
+      return false;
+
+    case "response": {
+      // RPC mode shares the stdout stream with command responses. The only
+      // fatal one is a rejected initial prompt: no agent events will follow,
+      // so mark the run as failed and trigger completion (otherwise it would
+      // hang until the child process was killed externally).
+      if (event.command === "prompt" && event.success === false) {
+        result.errorMessage =
+          typeof event.error === "string" && event.error.trim()
+            ? `Prompt rejected: ${event.error}`
+            : "The subagent rejected the initial prompt.";
+        result.stopReason = "error";
+        result.sawAgentEnd = true;
+        return true;
+      }
+      return false;
+    }
 
     case "tool_execution_start":
     case "tool_execution_update":
@@ -609,12 +682,19 @@ function formatThinkingActivityProgress(thinking) {
   return `${icon} ${label}`;
 }
 
+function formatMessageActivityProgress(activity) {
+  if (!activity || typeof activity.text !== "string" || !activity.text.trim()) return "";
+  // Delivered steering messages are always complete: `✓ user <text>`.
+  return `✓ user ${truncateInline(activity.text, MAX_MESSAGE_PROGRESS_CHARS)}`;
+}
+
 function getActivityOrder(item, fallback) {
   return typeof item?.activityOrder === "number" ? item.activityOrder : fallback;
 }
 
 function formatActivityProgress(activity) {
   if (activity?.type === "thinking") return formatThinkingActivityProgress(activity);
+  if (activity?.type === "message") return formatMessageActivityProgress(activity);
   if (activity?.type === "tool") {
     return `${formatToolStatusIcon(activity)} ${activity.displayText || activity.toolName || "tool"}${formatToolErrorSuffix(activity)}`;
   }

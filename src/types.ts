@@ -64,12 +64,23 @@ export interface ThinkingActivity extends ThinkingState {
   activityOrder: number;
 }
 
-export type Activity = ToolActivity | ThinkingActivity;
+/** A steering message (/subagent-msg) delivered to the subagent mid-run. */
+export interface MessageActivity {
+  type: "message";
+  status: "completed";
+  /** The user's message text (capped at storage). */
+  text: string;
+  activityOrder: number;
+}
+
+export type Activity = ToolActivity | ThinkingActivity | MessageActivity;
 
 export interface SubagentResult {
   agent: string;
   agentSource: AgentSource | "unknown";
   agentFile?: string;
+  /** Per-parent-session run id (`#N`), shown in the UI and used by /subagent-msg. */
+  runId?: number;
   task: string;
   exitCode: number;
   messages: Message[];
@@ -83,6 +94,8 @@ export interface SubagentResult {
   stopReason?: string;
   errorMessage?: string;
   sawAgentEnd?: boolean;
+  /** True when an `agent_settled` event was seen (full session quiescence). */
+  sawAgentSettled?: boolean;
   thinking?: ThinkingState;
   activityCount?: number;
   activities?: Activity[];

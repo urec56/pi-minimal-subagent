@@ -3,6 +3,11 @@ import type { AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { buildActiveAgentBlock, discoverAgents } from "./agents.ts";
 import {
+  describeRun,
+  listActiveRuns,
+  resolveSubagentMsgTarget,
+} from "./active-runs.ts";
+import {
   resolveEffectiveActiveAgent,
   type EffectiveActiveAgent,
   type SessionOverride,
@@ -63,6 +68,57 @@ function failedResult(agent: string, task: string, message: string): SubagentRes
 }
 
 export default function (pi: ExtensionAPI) {
+  // --- /subagent-msg pending-message widget ---------------------------------
+  // Runs with queued messages are shown as a widget line until the run
+  // finishes; the line is removed then (and the widget cleared when empty),
+  // so nothing lingers as if still pending.
+  const subagentMsgState = new Map<number, { agent: string; messages: string[] }>();
+  let mainSessionCtx: ExtensionContext | undefined;
+
+  function previewMessage(message: string): string {
+    const flat = message.replace(/\s+/g, " ").trim();
+    return flat.length > 50 ? `${flat.slice(0, 49)}…` : flat;
+  }
+
+  function refreshSubagentMsgWidget() {
+    const ctx = mainSessionCtx;
+    if (!ctx?.ui) return;
+    try {
+      // Like Pi's own "Steering:" list: one line per queued message, removed
+      // as soon as the subagent consumes it (onTurnStart), never lingering.
+      const lines: string[] = [];
+      for (const [runId, st] of [...subagentMsgState.entries()].sort((a, b) => a[0] - b[0])) {
+        for (const message of st.messages) {
+          lines.push(`⏳ #${runId} ${st.agent} — "${previewMessage(message)}"`);
+        }
+      }
+      ctx.ui.setWidget("subagent-msg", lines.length > 0 ? lines : undefined);
+    } catch {
+      // Widget is best-effort UI state.
+    }
+  }
+
+  function noteSubagentMsg(runId: number, agent: string, message: string) {
+    const entry = subagentMsgState.get(runId);
+    if (entry) entry.messages.push(message);
+    else subagentMsgState.set(runId, { agent, messages: [message] });
+    refreshSubagentMsgWidget();
+  }
+
+  /** A queued message is consumed at the next turn boundary after it was accepted. */
+  function popSubagentMsg(runId: number) {
+    const entry = subagentMsgState.get(runId);
+    if (!entry || entry.messages.length === 0) return;
+    entry.messages.shift();
+    if (entry.messages.length === 0) subagentMsgState.delete(runId);
+    refreshSubagentMsgWidget();
+  }
+
+  function forgetSubagentMsg(runId: number) {
+    // Safety net: whatever is still queued when the run ends is gone.
+    if (subagentMsgState.delete(runId)) refreshSubagentMsgWidget();
+  }
+
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
@@ -94,6 +150,7 @@ export default function (pi: ExtensionAPI) {
 
       const settings = resolveSettings(ctx.cwd);
       const parentSessionId = getParentSessionId(ctx);
+      if (!isSubagentChild) mainSessionCtx = ctx;
       const result = await runSubagent({
         cwd: ctx.cwd,
         agent,
@@ -110,6 +167,12 @@ export default function (pi: ExtensionAPI) {
         },
         signal,
         onUpdate,
+        onTurnStart: (runId, turnNumber) => {
+          // Turn #1 is the task itself; every later turn start means one
+          // queued message was just consumed by the subagent.
+          if (turnNumber >= 2) popSubagentMsg(runId);
+        },
+        onRunFinished: forgetSubagentMsg,
         makeDetails: (results) => makeDetails(results, {
           projectAgentsDir: discovery.projectAgentsDir,
         }),
@@ -306,6 +369,89 @@ export default function (pi: ExtensionAPI) {
         resolved.thinkingLevel ? ` (${resolved.thinkingLevel})` : ""
       }`;
       ctx.ui.notify(`${baseMessage}. Model: ${modelLabel}`, "info");
+    },
+  });
+
+  // --- Send messages to running subagents ----------------------------------
+  // /subagent-msg [target] <message...> — target is "#N" (run id shown in the
+  // progress/usage lines), an agent name (broadcast to all runs of that name),
+  // or omitted (the single active run). The message goes to the child as a
+  // steer command: it waits while the subagent streams and is delivered after
+  // its current turn finishes executing tool calls.
+  pi.registerCommand("subagent-msg", {
+    description:
+      "Send a steering message to a running subagent: /subagent-msg [#N | <name>] <message>",
+    getArgumentCompletions: (prefix): AutocompleteItem[] => {
+      // Offer both "#N agent" and the bare agent name so targeting works
+      // either way; names are deduplicated across runs of the same agent.
+      const values: string[] = [];
+      for (const run of [...listActiveRuns()].sort((a, b) => a.runId - b.runId)) {
+        values.push(`#${run.runId} ${run.agent}`);
+        if (!values.includes(run.agent)) values.push(run.agent);
+      }
+      return values
+        .filter((value) => value.startsWith(prefix))
+        .map((value) => ({ value, label: value }));
+    },
+    handler: async (args, ctx) => {
+      if (!isSubagentChild) mainSessionCtx = ctx;
+      if (isSubagentChild) {
+        ctx.ui.notify("/subagent-msg only applies to the main session; this process is a subagent run.", "warning");
+        return;
+      }
+
+      const tokens = args.trim().split(/\s+/).filter(Boolean);
+      let target = "";
+      let messageTokens: string[] = tokens;
+
+      // A leading token is a target when it looks like "#N" or exactly matches
+      // an active run's agent name; otherwise the whole line is the message.
+      if (tokens.length > 0) {
+        const first = tokens[0];
+        const looksLikeRunId = /^#\d+$/.test(first);
+        const matchesActiveAgent = listActiveRuns().some((run) => run.agent === first);
+        if (looksLikeRunId || matchesActiveAgent) {
+          target = first;
+          messageTokens = tokens.slice(1);
+        }
+      }
+
+      const resolution = resolveSubagentMsgTarget(target);
+
+      if (resolution.kind === "no-runs") {
+        ctx.ui.notify("No active subagent runs.", "warning");
+        return;
+      }
+      if (resolution.kind === "unknown-target") {
+        const listing = resolution.available.map((run) => describeRun(run)).join("\n");
+        ctx.ui.notify(
+          target
+            ? `Unknown subagent target "${target}". Active runs:\n${listing}`
+            : `Multiple active subagents — send to "#N" or an agent name:\n${listing}`,
+          "error",
+        );
+        return;
+      }
+
+      const message = messageTokens.join(" ");
+      if (!message) {
+        // No text: show what the target(s) currently are.
+        ctx.ui.notify(
+          resolution.runs.map((run) => describeRun(run)).join("\n"),
+          "info",
+        );
+        return;
+      }
+
+      const delivered = resolution.runs.filter((run) => run.sendSteer(message));
+      if (delivered.length === 0) {
+        ctx.ui.notify("Subagent process is no longer accepting messages.", "error");
+        return;
+      }
+
+      // The widget line replaces the old one-shot notify: it stays visible while
+      // the message waits and disappears when the run finishes (onRunFinished).
+      for (const run of delivered) noteSubagentMsg(run.runId, run.agent, message);
     },
   });
 

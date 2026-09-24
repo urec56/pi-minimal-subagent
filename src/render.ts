@@ -6,6 +6,7 @@ import { type SubagentResult, isResultError, isResultSuccess } from "./types.ts"
 const COLLAPSED_ACTIVITY_COUNT = 8;
 const COLLAPSED_OUTPUT_LINES = 3;
 const MAX_TASK_PREVIEW_CHARS = 72;
+const MAX_MESSAGE_PREVIEW_CHARS = 160;
 const MAX_TEXT_PREVIEW_CHARS = 280;
 const MAX_ERROR_PREVIEW_CHARS = 1200;
 const MAX_INLINE_ERROR_PREVIEW_CHARS = 160;
@@ -65,11 +66,18 @@ function fmtContextFill(result: SubagentResult, fg: (color: any, text: string) =
   return display;
 }
 
+/** ` #N` suffix for the run id shown in headers; empty when unknown. */
+function fmtRunId(result: SubagentResult): string {
+  return typeof result.runId === "number" ? ` #${result.runId}` : "";
+}
+
 function fmtUsage(result: SubagentResult, fg: (color: any, text: string) => string): string {
   const usage = result.usage;
   if (!usage) return "";
 
   const parts: string[] = [];
+  // Run id first so the line is self-identifying for /subagent-msg.
+  if (typeof result.runId === "number") parts.push(`#${result.runId}`);
   if (usage.turns) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
   if (usage.input) parts.push(`↑${fmtCount(usage.input)}`);
   if (usage.output) parts.push(`↓${fmtCount(usage.output)}`);
@@ -165,6 +173,13 @@ function thinkingLine(thinking: any, fg: (color: any, text: string) => string): 
   return `${icon} ${fg("toolOutput", label)}`;
 }
 
+/** A steering message delivered mid-run (/subagent-msg): `✓ user <text>`. */
+function messageLine(message: any, fg: (color: any, text: string) => string): string {
+  const text = typeof message?.text === "string" ? message.text.replace(/\s+/g, " ").trim() : "";
+  if (!text) return "";
+  return `${fg("success", "✓")} ${fg("toolOutput", `user ${truncate(text, MAX_MESSAGE_PREVIEW_CHARS)}`)}`;
+}
+
 function activityOrder(item: any, fallback: number): number {
   return typeof item?.activityOrder === "number" ? item.activityOrder : fallback;
 }
@@ -190,6 +205,7 @@ function totalActivityCount(result: SubagentResult, stored: any[]): number {
 
 function activityLine(activity: any, fg: (color: any, text: string) => string): string {
   if (activity?.type === "thinking") return thinkingLine(activity, fg);
+  if (activity?.type === "message") return messageLine(activity, fg);
   if (activity?.type === "tool") {
     return `${toolIcon(activity, fg)} ${fg(activity?.status === "error" ? "error" : "toolOutput", toolLabel(activity))}${toolErrorSuffix(activity, fg)}`;
   }
@@ -246,6 +262,7 @@ export function renderSubagentResult(toolResult: any, { expanded }: { expanded: 
 
   const fg = theme.fg.bind(theme);
   const currentStatus = status(result);
+  const runIdSuffix = fmtRunId(result);
   const icon = statusIcon(result, fg);
   const finalOutput = getFinalAssistantText(result.messages);
   const usage = fmtUsage(result, fg);
@@ -255,7 +272,9 @@ export function renderSubagentResult(toolResult: any, { expanded }: { expanded: 
   if (expanded) {
     const container = new Container();
     container.addChild(new Spacer(1));
-    container.addChild(new Text(`${icon} ${fg("toolTitle", theme.bold(statusLabel(currentStatus)))} ${fg("dim", result.agent)}`, 0, 0));
+    container.addChild(
+      new Text(`${icon} ${fg("toolTitle", theme.bold(statusLabel(currentStatus)))} ${fg("dim", `${result.agent}${runIdSuffix}`)}`, 0, 0),
+    );
 
     addSection(container, "─── Agent ───", new Text(fg("dim", `${result.agent}${result.agentSource ? ` (${result.agentSource})` : ""}`), 0, 0), fg);
     addSection(container, "─── Task ───", new Text(fg("dim", result.task || "..."), 0, 0), fg);
@@ -280,7 +299,7 @@ export function renderSubagentResult(toolResult: any, { expanded }: { expanded: 
   }
 
   const collapsedStatusPrefix = currentStatus === "running" ? "" : "\n";
-  let text = `${collapsedStatusPrefix}${icon} ${fg("toolTitle", theme.bold(statusLabel(currentStatus)))} ${fg("dim", result.agent)}`;
+  let text = `${collapsedStatusPrefix}${icon} ${fg("toolTitle", theme.bold(statusLabel(currentStatus)))} ${fg("dim", `${result.agent}${runIdSuffix}`)}`;
 
   if (activityText) {
     text += `\n${activityText}`;

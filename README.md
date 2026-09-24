@@ -29,6 +29,36 @@ It registers one tool:
 
 There are no built-in parallel, chain, pool, or orchestrator modes. If the parent agent wants parallel subagents, it should call `subagent` multiple times in the same turn and let Pi execute those tool calls concurrently.
 
+## Sending messages to running subagents
+
+Subagent runs operate in Pi's RPC mode under the hood, so you can send them additional messages while they work. Use `/subagent-msg`:
+
+```
+/subagent-msg also check edge cases      → the single active run
+/subagent-msg #2 skip the legacy path    → a specific run by id
+/subagent-msg reviewer be concise        → all active runs of that agent
+```
+
+A message is sent as a *steer* command: while the subagent is streaming it waits in its queue and is delivered right after the current turn finishes executing tool calls — the same semantics as typing into a busy Pi session. If nothing matches (or nothing is running), the reply lists the active runs.
+
+A delivered message shows up in the subagent's activity list at its delivery point:
+
+```
+✓ thinking 39 chars
+✓ read ~/projects/work/pf-saas_back/internal/web/handler/admin.go
+✓ user Доделал уже?
+✓ write /tmp/writer-test-routes.md
+```
+
+Every run gets an id (`#N`) shown next to its agent name in the progress and usage lines:
+
+```
+… running reviewer #2
+#2 32 turns ↑105k ↓25k R2.5M 40.1%/262k litellm/qwen
+```
+
+`/subagent-msg` without a message shows what the target run(s) currently are; with no active runs it reports that.
+
 ## Agent files
 
 Agents are Markdown files with YAML frontmatter:

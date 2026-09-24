@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { buildActiveAgentBlock } from "./agents.ts";
+import { registerActiveRun, unregisterActiveRun } from "./active-runs.ts";
 import { getSubagentProgressText, processPiJsonLine } from "./runner-events.js";
 import {
   type AgentConfig,
@@ -34,15 +35,92 @@ export interface RunSubagentOptions {
   resolveContextWindow?: (provider: string, modelId: string) => number | undefined;
   signal?: AbortSignal;
   onUpdate?: OnUpdateCallback;
+  /** Called with the spawned child process right after spawn (test cleanup, monitoring). */
+  onChildSpawned?: (proc: import("node:child_process").ChildProcess) => void;
+  /** Called once the run has fully finished and the child is terminated. */
+  onRunFinished?: (runId: number) => void;
+  /**
+   * Called for every `turn_start` event of the child, with a per-run turn
+   * counter starting at 1. Turn #1 belongs to the task itself; every later
+   * turn start means one queued steering message was consumed.
+   */
+  onTurnStart?: (runId: number, turnNumber: number) => void;
   makeDetails: (results: SubagentResult[]) => SubagentDetails;
 }
 
-function resolvePiSpawn(): { command: string; prefixArgs: string[] } {
+/**
+ * True when the given file sits inside a package whose `name` identifies it as
+ * the Pi coding agent (npm scope varies across releases: @mariozechner/…,
+ * @earendil-works/pi-coding-agent, …). Walking up from the resolved entry file
+ * finds the owning package.json. This is deliberately independent of env vars:
+ * PI_* variables are inherited by arbitrary child processes and cannot tell a
+ * real Pi session apart from a script that merely runs in their environment.
+ */
+function looksLikePiCliEntry(file: string): boolean {
+  let dir: string;
+  try {
+    dir = path.dirname(fs.realpathSync(file));
+  } catch {
+    return false; // File does not exist — certainly not the Pi CLI entry.
+  }
+
+  for (let depth = 0; depth < 12 && dir.length > 1; depth++) {
+    try {
+      const raw = fs.readFileSync(path.join(dir, "package.json"), "utf-8");
+      const nameMatch = /"name"\s*:\s*"([^"]+)"/.exec(raw);
+      if (nameMatch) return nameMatch[1].endsWith("pi-coding-agent");
+    } catch {
+      // No package.json at this level — keep walking up.
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return false;
+}
+
+/** Finds an executable on PATH without shelling out. */
+function findOnPath(name: string): string | undefined {
+  const pathEnv = process.env.PATH ?? "";
+  for (const dir of pathEnv.split(isWindows ? ";" : ":")) {
+    if (!dir) continue;
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Not here — keep looking.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolves how to spawn a child Pi process:
+ * - when this node process IS the Pi CLI (argv[1] points inside the Pi
+ *   package): reuse the current node + entry file so children run exactly the
+ *   same Pi build;
+ * - otherwise (tests, SDK embedding, scripts that merely inherit PI_* env):
+ *   fall back to `pi` on PATH.
+ *
+ * Throws instead of guessing when neither is available — spawning an arbitrary
+ * script as if it were the Pi CLI must not happen silently. Note: the PATH
+ * fallback locates a bare `pi` executable; Windows wrappers (`pi.cmd`) need
+ * shell invocation and are only covered by the in-package fast path.
+ */
+export function resolvePiSpawn(): { command: string; prefixArgs: string[] } {
   const isNode = /[\\/]node(?:\.exe)?$/i.test(process.execPath);
-  if (isNode && process.argv[1]) {
+  if (isNode && process.argv[1] && looksLikePiCliEntry(process.argv[1])) {
     return { command: process.execPath, prefixArgs: [process.argv[1]] };
   }
-  return { command: process.execPath, prefixArgs: [] };
+
+  const piBin = findOnPath("pi");
+  if (!piBin) {
+    throw new Error(
+      "Unable to locate the Pi CLI: this node process is not a Pi session and no 'pi' executable was found on PATH.",
+    );
+  }
+  return { command: piBin, prefixArgs: [] };
 }
 
 function writeSystemPromptToTempFile(agent: AgentConfig): { dir: string; filePath: string } {
@@ -119,14 +197,18 @@ function buildChildEnv(settings: Settings, parentSessionId?: string | null): Nod
   return inheritedEnv;
 }
 
+/**
+ * Builds the child CLI arguments. The child runs in RPC mode: the task is
+ * sent as an initial `prompt` command on stdin (not a positional argument) and
+ * stdin stays open so steering messages can be written while it runs.
+ */
 function buildPiArgs(opts: {
-  task: string;
   systemPromptPath: string | null;
   settings: Settings;
   agent: AgentConfig;
 }): string[] {
-  const { task, systemPromptPath, settings, agent } = opts;
-  const args = ["--mode", "json", "-p", "--no-session"];
+  const { systemPromptPath, settings, agent } = opts;
+  const args = ["--mode", "rpc", "--no-session"];
   const extensions = mergeExtensions(settings, agent);
 
   if (settings.extensions !== null) {
@@ -145,7 +227,6 @@ function buildPiArgs(opts: {
   }
   if (systemPromptPath) args.push("--append-system-prompt", systemPromptPath);
 
-  args.push(task);
   return args;
 }
 
@@ -176,6 +257,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
     });
   };
 
+  let activeRunId: number | undefined;
   let tmpDir: string | null = null;
   let systemPromptPath: string | null = null;
   if (agent.systemPrompt.trim()) {
@@ -185,7 +267,18 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   }
 
   try {
-    const piArgs = buildPiArgs({ task, systemPromptPath, settings, agent });
+    let spawnInfo: { command: string; prefixArgs: string[] };
+    try {
+      spawnInfo = resolvePiSpawn();
+    } catch (err) {
+      // Report a clean tool error instead of crashing or spawning the wrong
+      // process (the finally block still cleans up temp files).
+      const message = err instanceof Error ? err.message : String(err);
+      result.stderr = message;
+      return normalizeCompletedResult({ ...result, exitCode: 127 }, false);
+    }
+
+    const piArgs = buildPiArgs({ systemPromptPath, settings, agent });
     const artifacts = createArtifactFiles();
     result.artifactDir = artifacts.dir;
     result.stdoutArtifact = artifacts.stdoutPath;
@@ -193,22 +286,51 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
     let wasAborted = false;
 
     const exitCode = await new Promise<number>((resolve) => {
-      const { command, prefixArgs } = resolvePiSpawn();
-      const proc = spawn(command, [...prefixArgs, ...piArgs], {
+      const proc = spawn(spawnInfo.command, [...spawnInfo.prefixArgs, ...piArgs], {
         cwd,
         shell: false,
         stdio: ["pipe", "pipe", "pipe"],
         env: buildChildEnv(settings, opts.parentSessionId),
       });
 
+      // Let callers (tests, monitoring) track the child for cleanup.
+      try {
+        opts.onChildSpawned?.(proc);
+      } catch {
+        // A faulty callback must not break the run.
+      }
+
       proc.stdin.on("error", () => {
         // Ignore broken pipe on fast exits.
       });
-      proc.stdin.end();
+
+      // RPC mode: send the task as a prompt command and keep stdin open so
+      // /subagent-msg can steer this run while it is active. Registering the
+      // run right after spawn makes it addressable before events start flowing.
+      const writeRpcCommand = (command: object): boolean => {
+        if (proc.stdin.destroyed || proc.killed) return false;
+        try {
+          proc.stdin.write(`${JSON.stringify(command)}\n`);
+          return true;
+        } catch {
+          // Child died before reading — the error/close handlers report it.
+          return false;
+        }
+      };
+
+      activeRunId = registerActiveRun(agent.name, task, (message) =>
+        writeRpcCommand({ type: "steer", message }),
+      );
+      result.runId = activeRunId;
+
+      // A failed initial write just means the child is already gone; the
+      // error/close handlers finish the run.
+      writeRpcCommand({ type: "prompt", message: task });
 
       let buffer = "";
       let didClose = false;
       let settled = false;
+      let turnsSeen = 0;
       let abortHandler: (() => void) | undefined;
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
 
@@ -264,7 +386,21 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
           maybeResolveContextWindow();
           emitUpdate();
         }
-        maybeFinishFromAgentEnd();
+        // A queued steering message is consumed at the next turn boundary:
+        // turn #1 belongs to the task itself, so every later turn_start
+        // corresponds to one delivered message.
+        if (line.includes('"turn_start"')) {
+          try {
+            const event = JSON.parse(line);
+            if (event?.type === "turn_start") {
+              turnsSeen += 1;
+              if (activeRunId !== undefined) opts.onTurnStart?.(activeRunId, turnsSeen);
+            }
+          } catch {
+            // Incomplete line — the next flush will carry the full event.
+          }
+        }
+        maybeFinishOnSemanticCompletion();
       };
 
       const flushBufferedLines = (text: string) => {
@@ -273,11 +409,13 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
         }
       };
 
-      const maybeFinishFromAgentEnd = () => {
-        if (!result.sawAgentEnd || didClose || settled) return;
+      const maybeFinishOnSemanticCompletion = () => {
+        // agent_settled (RPC mode: full quiescence, no queued continuations)
+        // or a non-retrying agent_end as the fallback for older pi versions.
+        if (!(result.sawAgentSettled || result.sawAgentEnd) || didClose || settled) return;
         clearSemanticCompletionTimer();
         semanticCompletionTimer = setTimeout(() => {
-          if (didClose || settled || !result.sawAgentEnd) return;
+          if (didClose || settled || !(result.sawAgentSettled || result.sawAgentEnd)) return;
           if (buffer.trim()) {
             flushBufferedLines(buffer);
             buffer = "";
@@ -332,6 +470,14 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
     result.exitCode = exitCode;
     return normalizeCompletedResult(result, wasAborted);
   } finally {
+    unregisterActiveRun(activeRunId);
+    if (activeRunId !== undefined) {
+      try {
+        opts.onRunFinished?.(activeRunId);
+      } catch {
+        // UI bookkeeping must not break the result.
+      }
+    }
     cleanupTempDir(tmpDir);
   }
 }
