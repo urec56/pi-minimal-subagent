@@ -46,7 +46,7 @@ A delivered message shows up in the subagent's activity list at its delivery poi
 ```
 ✓ thinking 39 chars
 ✓ read ~/projects/work/pf-saas_back/internal/web/handler/admin.go
-✓ user Доделал уже?
+✓ user Do you complete already?
 ✓ write /tmp/writer-test-routes.md
 ```
 

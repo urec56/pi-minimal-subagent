@@ -89,13 +89,13 @@ test("a user message delivered after assistant activity becomes a 'message' acti
   const result = baseResult();
   processPiEvent(userMessageEvent("do work"), result); // task batch — skipped
   assistantTurn(result);
-  assert.equal(processPiEvent(userMessageEvent("Доделал уже?"), result), true);
+  assert.equal(processPiEvent(userMessageEvent("Do you complete already?"), result), true);
 
   const activities = result.activities;
   assert.equal(activities.length, 1);
   assert.equal(activities[0].type, "message");
   assert.equal(activities[0].status, "completed");
-  assert.equal(activities[0].text, "Доделал уже?");
+  assert.equal(activities[0].text, "Do you complete already?");
 });
 
 test("a steering delivery is ordered after the preceding turn's tool activity", () => {

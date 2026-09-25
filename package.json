@@ -17,6 +17,7 @@
     "test": "node --test src/*.test.js",
     "typecheck": "tsc --noEmit"
   },
+  "author": "urec56",
   "license": "MIT",
   "peerDependencies": {
     "@mariozechner/pi-agent-core": "*",

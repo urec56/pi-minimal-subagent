@@ -53,11 +53,11 @@ test("delivered steering messages render as 'user' activity lines", () => {
   const result = baseRenderResult([
     { type: "thinking", status: "completed", chars: 39, activityOrder: 1 },
     { type: "tool", toolName: "read", displayText: "read /tmp/admin.go", status: "completed", activityOrder: 2 },
-    { type: "message", status: "completed", text: "Доделал уже?", activityOrder: 3 },
+    { type: "message", status: "completed", text: "Do you complete already?", activityOrder: 3 },
   ]);
 
   const component = renderCollapsed(result);
-  assert.match(component.text, /✓ user Доделал уже\?/);
+  assert.match(component.text, /✓ user Do you complete already\?/);
 });
 
 test("long steering message previews are truncated on one line", () => {
