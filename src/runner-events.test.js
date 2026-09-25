@@ -104,7 +104,7 @@ test("a steering delivery is ordered after the preceding turn's tool activity", 
   assistantTurn(result);
   processPiEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, result);
 
-  assert.equal(processPiEvent(userMessageEvent("Сделай ещё"), result), true);
+  assert.equal(processPiEvent(userMessageEvent("Do one more thing"), result), true);
 
   const activities = result.activities;
   assert.deepEqual(activities.map((activity) => activity.type), ["tool", "message"]);
@@ -118,6 +118,20 @@ test("an exact re-emission of the task text is not recorded as a steering delive
   assert.equal(result.activities, undefined);
 });
 
+test("a steering delivery queued before the first response is still recorded", () => {
+  const result = baseResult();
+  processPiEvent(userMessageEvent("do work"), result); // initial task — skipped
+  assert.equal(result.activities, undefined);
+
+  // Queued while the child was starting up: pi injects it right after the
+  // task, before any assistant activity.
+  assert.equal(processPiEvent(userMessageEvent("Do one more thing"), result), true);
+
+  const activities = result.activities;
+  assert.deepEqual(activities.map((activity) => activity.type), ["message"]);
+  assert.match(getForkProgressText(result), /✓ user Do one more thing/);
+});
+
 test("empty user messages are not recorded", () => {
   const result = baseResult();
   assistantTurn(result);
@@ -129,6 +143,34 @@ test("progress text lists a delivered steering message as a 'user' line", () => 
   const result = baseResult();
   processPiEvent(userMessageEvent("do work"), result); // task batch — skipped
   processPiEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, result);
-  assert.equal(processPiEvent(userMessageEvent("Сделай ещё"), result), true);
-  assert.match(getForkProgressText(result), /✓ user Сделай ещё/);
+  assert.equal(processPiEvent(userMessageEvent("Do one more thing"), result), true);
+  assert.match(getForkProgressText(result), /✓ user Do one more thing/);
+});
+
+test("a re-emitted context warning steer is recorded as an 'alert' activity", () => {
+  const result = baseResult();
+  processPiEvent(userMessageEvent("do work"), result); // task batch — skipped
+  processPiEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, result);
+  // Raw file content as read from disk (trailing newline, not trimmed).
+  result.sentContextAlert = "STOP — context limit reached\n";
+
+  assert.equal(processPiEvent(userMessageEvent("STOP — context limit reached"), result), true);
+
+  const activities = result.activities;
+  assert.deepEqual(activities.map((activity) => activity.type), ["tool", "alert"]);
+  assert.equal(activities[1].text, "STOP — context limit reached");
+  assert.match(getForkProgressText(result), /⚠ alert STOP — context limit reached/);
+});
+
+test("a /subagent-msg stays a 'user' line even when a context alert was also sent", () => {
+  const result = baseResult();
+  processPiEvent(userMessageEvent("do work"), result); // task batch — skipped
+  processPiEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, result);
+  result.sentContextAlert = "STOP — context limit reached";
+
+  assert.equal(processPiEvent(userMessageEvent("Do one more thing"), result), true);
+
+  const activities = result.activities;
+  assert.deepEqual(activities.map((activity) => activity.type), ["tool", "message"]);
+  assert.match(getForkProgressText(result), /✓ user Do one more thing/);
 });

@@ -60,6 +60,18 @@ test("delivered steering messages render as 'user' activity lines", () => {
   assert.match(component.text, /✓ user Do you complete already\?/);
 });
 
+// Context warnings injected by the runner (contextWarning frontmatter) show up
+// as `⚠ alert <text>` lines at their delivery point.
+test("context warning injections render as 'alert' activity lines", () => {
+  const result = baseRenderResult([
+    { type: "tool", toolName: "bash", displayText: "$ echo hi", status: "completed", activityOrder: 1 },
+    { type: "alert", status: "completed", text: "STOP — context limit reached (probe test). Reply with exactly one line: STOPPED-BY-CONTEXT-WARNING", activityOrder: 2 },
+  ]);
+
+  const component = renderCollapsed(result);
+  assert.match(component.text, /⚠ alert STOP — context limit reached/);
+});
+
 test("long steering message previews are truncated on one line", () => {
   const longText = "x".repeat(400);
   const result = baseRenderResult([

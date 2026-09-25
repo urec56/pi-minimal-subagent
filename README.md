@@ -80,9 +80,40 @@ Loaded from:
 
 Project agents override user agents with the same name.
 
-Supported optional frontmatter: `model`, `extensions`, `skills`, and `thinking`.
+Supported optional frontmatter: `model`, `extensions`, `skills`, `thinking`, and `contextWarning` (see below).
 
 Subagents use Pi's default enabled tools. This extension does not read `tools` frontmatter and does not pass `--tools` to child Pi processes. Extra tools should come from configured extensions.
+
+### Context warning (stop instruction)
+
+By default a subagent runs until it finishes its task. If you want it told to wrap up while there is still context left, configure `contextWarning` in the agent's frontmatter:
+
+```markdown
+---
+name: scout
+description: Fast codebase reconnaissance
+contextWarning:
+  percent: 85
+  messageFile: ~/.pi/agent/context-stop.md
+---
+You are a fast codebase scout. ...
+```
+
+- `percent` — number in range 0..100 (inclusive) at which the subagent's context fill reaches and the instruction is sent.
+- `messageFile` — `.md` or `.txt` file whose content is sent to the subagent as a *steer* command (the same mechanism `/subagent-msg` uses). Absolute and `~/...` paths are used as-is; relative paths resolve from the session cwd. The file must exist at launch time.
+
+Behavior:
+
+- Off by default: no key, or an empty `contextWarning:` value, means nothing happens, silently.
+- Validated at every subagent launch. An invalid configuration (non-object block, missing keys, non-number/out-of-range percent, wrong extension, missing file, empty file) never breaks the run — it shows a warning listing all found problems and runs without the feature. Different problems get different messages.
+- The message file is read once at launch and kept in memory; nothing touches disk while the run is in flight.
+- When the subagent's context fill (the same numbers pi's `X%/Yk` indicator shows for the run) reaches `percent`, the file content is sent as-is — once per run, with a warning line in the UI (`#2 scout reached 87.0% of context (threshold 85%) — stop instruction sent`). The delivered instruction appears in the subagent's activity list as an alert line, distinct from human `/subagent-msg` deliveries:
+
+```
+✓ user Do you complete already?   ← /subagent-msg (typed by a person)
+⚠ alert STOP — context limit reached  ← injected stop instruction
+```
+- Each agent carries its own configuration, so parallel agents can use different thresholds and messages. Nested runs validate the frontmatter of whichever agent is being launched; UI alerts are best-effort (subagent child processes have no UI).
 
 ## Settings
 

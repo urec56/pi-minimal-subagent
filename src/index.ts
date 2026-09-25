@@ -12,6 +12,7 @@ import {
   type EffectiveActiveAgent,
   type SessionOverride,
 } from "./active-agent.ts";
+import { validateContextWarning } from "./context-warning.ts";
 import { resolveAgentModelRef } from "./model-ref.ts";
 import { renderSubagentCall, renderSubagentResult } from "./render.ts";
 import { runSubagent } from "./runner.ts";
@@ -151,6 +152,29 @@ export default function (pi: ExtensionAPI) {
       const settings = resolveSettings(ctx.cwd);
       const parentSessionId = getParentSessionId(ctx);
       if (!isSubagentChild) mainSessionCtx = ctx;
+
+      // Context warning config comes from this agent's own frontmatter and is
+      // validated at every launch (see context-warning.ts). Invalid config:
+      // alert + run without the feature; absent or empty key: silently off.
+      let contextWarning: { percent: number; content: string } | undefined;
+      const rawContextWarning = agent.contextWarning;
+      if (rawContextWarning !== undefined && rawContextWarning !== null) {
+        const validation = validateContextWarning(rawContextWarning, ctx.cwd);
+        if (validation.ok) {
+          contextWarning = validation.warning;
+        } else {
+          try {
+            ctx.ui.notify(
+              `Subagent "${agent.name}": context warning disabled — invalid configuration in ${agent.filePath}:
+${validation.errors.map((error) => `• ${error}`).join("\n")}`,
+              "warning",
+            );
+          } catch {
+            // Notifications are best-effort.
+          }
+        }
+      }
+
       const result = await runSubagent({
         cwd: ctx.cwd,
         agent,
@@ -171,6 +195,18 @@ export default function (pi: ExtensionAPI) {
           // Turn #1 is the task itself; every later turn start means one
           // queued message was just consumed by the subagent.
           if (turnNumber >= 2) popSubagentMsg(runId);
+        },
+        contextWarning,
+        onContextWarning: (runId, percent) => {
+          if (!ctx.hasUI || !contextWarning) return;
+          try {
+            ctx.ui.notify(
+              `#${runId} ${agent.name} reached ${percent.toFixed(1)}% of context (threshold ${contextWarning.percent}%) — stop instruction sent`,
+              "warning",
+            );
+          } catch {
+            // Notifications are best-effort.
+          }
         },
         onRunFinished: forgetSubagentMsg,
         makeDetails: (results) => makeDetails(results, {

@@ -391,37 +391,29 @@ function syncThinkingState(result, activity) {
 }
 
 /**
- * True when assistant-side activity has already been recorded (an LLM response
- * or a tool/thinking event). The initial task is emitted by the child as
- * user-role message(s) before any of those; steering messages delivered
- * mid-run always arrive after.
- */
-function hasSeenAssistantActivity(result) {
-  if (Array.isArray(result.messages) && result.messages.length > 0) return true;
-  const activities = Array.isArray(result.activities) ? result.activities : [];
-  for (const activity of activities) {
-    if (activity?.type === "thinking" || activity?.type === "tool") return true;
-  }
-  return false;
-}
-
-/**
- * A user-role message that arrives after the subagent has already produced
- * assistant-side activity is a steering message delivered mid-run
- * (/subagent-msg). Record it as a "message" activity so it shows up in the
- * activity list at its delivery point. The initial task batch (emitted before
- * any assistant activity) and exact re-emissions of the task are skipped; a
- * steer queued before the first response is indistinguishable from the task
- * batch, so it is not recorded (it still works, just without an activity line).
+ * A user-role message that is not the initial task is a steering delivery
+ * (/subagent-msg or a context warning). Record it as an activity so it shows
+ * up in the activity list at its delivery point. The child injects steers
+ * queued before the first LLM call right after the task (before any assistant
+ * activity), so early deliveries are distinguishable from the task batch by
+ * their text: only exact re-emissions of the task itself are skipped. A steer
+ * whose text happens to equal the task is indistinguishable and stays
+ * unrecorded.
+ *
+ * The context warning steer is sent by the runner itself: its re-emission is
+ * recorded as an "alert" activity instead, so the UI renders `⚠ alert` rather
+ * than `✓ user`. Matching is whitespace-insensitive because the stored file
+ * content may carry trailing newlines while the re-emitted text is trimmed.
  */
 function addUserMessageActivity(result, message) {
   if (!message || typeof message !== "object") return false;
-  if (!hasSeenAssistantActivity(result)) return false;
   const text = extractTextFromContent(message.content).trim();
   if (!text) return false;
   if (typeof result.task === "string" && text === result.task) return false;
+  const isContextAlert =
+    typeof result.sentContextAlert === "string" && text === result.sentContextAlert.trim();
   addActivity(result, {
-    type: "message",
+    type: isContextAlert ? "alert" : "message",
     status: "completed",
     text: truncateMiddle(text, MAX_MESSAGE_ACTIVITY_CHARS),
     activityOrder: nextActivityOrder(result),
@@ -688,12 +680,19 @@ function formatMessageActivityProgress(activity) {
   return `✓ user ${truncateInline(activity.text, MAX_MESSAGE_PROGRESS_CHARS)}`;
 }
 
+function formatAlertActivityProgress(activity) {
+  if (!activity || typeof activity.text !== "string" || !activity.text.trim()) return "";
+  // Delivered context warnings are always complete: `⚠ alert <text>`.
+  return `⚠ alert ${truncateInline(activity.text, MAX_MESSAGE_PROGRESS_CHARS)}`;
+}
+
 function getActivityOrder(item, fallback) {
   return typeof item?.activityOrder === "number" ? item.activityOrder : fallback;
 }
 
 function formatActivityProgress(activity) {
   if (activity?.type === "thinking") return formatThinkingActivityProgress(activity);
+  if (activity?.type === "alert") return formatAlertActivityProgress(activity);
   if (activity?.type === "message") return formatMessageActivityProgress(activity);
   if (activity?.type === "tool") {
     return `${formatToolStatusIcon(activity)} ${activity.displayText || activity.toolName || "tool"}${formatToolErrorSuffix(activity)}`;

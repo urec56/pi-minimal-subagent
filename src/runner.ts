@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { buildActiveAgentBlock } from "./agents.ts";
+import { evaluateContextWarning } from "./context-warning.ts";
 import { registerActiveRun, unregisterActiveRun } from "./active-runs.ts";
 import { getSubagentProgressText, processPiJsonLine } from "./runner-events.js";
 import {
@@ -45,6 +46,14 @@ export interface RunSubagentOptions {
    * turn start means one queued steering message was consumed.
    */
   onTurnStart?: (runId: number, turnNumber: number) => void;
+  /**
+   * Context warning captured at launch (validated agent frontmatter config).
+   * When the run's context fill reaches `percent`, `content` is sent once as
+   * a steer command — same delivery path as /subagent-msg.
+   */
+  contextWarning?: { percent: number; content: string };
+  /** Called once, after the stop instruction was actually sent (UI alert). */
+  onContextWarning?: (runId: number, percent: number) => void;
   makeDetails: (results: SubagentResult[]) => SubagentDetails;
 }
 
@@ -331,6 +340,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
       let didClose = false;
       let settled = false;
       let turnsSeen = 0;
+      let contextWarningFired = false;
       let abortHandler: (() => void) | undefined;
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
 
@@ -380,10 +390,29 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
         }
       };
 
+      // One-shot context warning: fires on the first event where the run's
+      // context fill reaches the configured threshold (same numbers as the
+      // X%/Yk indicator). Content was captured at launch, so sending never
+      // touches disk. A failed write just means the child is already gone.
+      const checkContextWarning = () => {
+        const warning = opts.contextWarning;
+        if (!warning || contextWarningFired) return;
+        const evaluation = evaluateContextWarning(warning, result.contextWindow, result.usage?.contextTokens);
+        if (!evaluation.reached) return;
+        if (writeRpcCommand({ type: "steer", message: warning.content })) {
+          contextWarningFired = true;
+          // Tag the re-emitted steering message as an alert activity in the
+          // event stream so the UI can distinguish it from a human /subagent-msg.
+          result.sentContextAlert = warning.content;
+          if (activeRunId !== undefined) opts.onContextWarning?.(activeRunId, evaluation.percent);
+        }
+      };
+
       const flushLine = (line: string) => {
         rememberStdoutLine(result, line);
         if (processPiJsonLine(line, result)) {
           maybeResolveContextWindow();
+          checkContextWarning();
           emitUpdate();
         }
         // A queued steering message is consumed at the next turn boundary:

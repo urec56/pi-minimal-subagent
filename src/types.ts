@@ -13,6 +13,11 @@ export interface AgentConfig {
   extensions?: string[];
   skills?: string[];
   thinking?: string;
+  /**
+   * Raw `contextWarning` frontmatter value (validated at subagent launch,
+   * see context-warning.ts). `null`/empty YAML key means "not configured".
+   */
+  contextWarning?: unknown;
 }
 
 export interface Settings {
@@ -73,7 +78,16 @@ export interface MessageActivity {
   activityOrder: number;
 }
 
-export type Activity = ToolActivity | ThinkingActivity | MessageActivity;
+/** A context warning injected by the runner (agent `contextWarning` frontmatter). */
+export interface AlertActivity {
+  type: "alert";
+  status: "completed";
+  /** The stop-instruction text from the configured message file. */
+  text: string;
+  activityOrder: number;
+}
+
+export type Activity = ToolActivity | ThinkingActivity | MessageActivity | AlertActivity;
 
 export interface SubagentResult {
   agent: string;
@@ -96,6 +110,11 @@ export interface SubagentResult {
   sawAgentEnd?: boolean;
   /** True when an `agent_settled` event was seen (full session quiescence). */
   sawAgentSettled?: boolean;
+  /**
+   * Context warning content the runner sent as a steer mid-run. Used to tag
+   * its re-emission in the child event stream as an `alert` activity.
+   */
+  sentContextAlert?: string;
   thinking?: ThinkingState;
   activityCount?: number;
   activities?: Activity[];

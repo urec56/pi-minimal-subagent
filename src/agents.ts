@@ -75,7 +75,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
     const description = firstString(frontmatter.description);
     if (!name || !description) continue;
 
-    agents.push({
+    const agent: AgentConfig = {
       name,
       description,
       systemPrompt: body.trim(),
@@ -85,7 +85,15 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
       extensions: parseList(frontmatter.extensions, path.dirname(filePath), true),
       skills: parseList(frontmatter.skills, path.dirname(filePath), true),
       thinking: firstString(frontmatter.thinking),
-    });
+    };
+
+    // Raw value on purpose (object, null for an empty key, or whatever a user
+    // wrote): validation with per-error alerts happens at subagent launch.
+    if (Object.hasOwn(frontmatter, "contextWarning")) {
+      agent.contextWarning = frontmatter.contextWarning;
+    }
+
+    agents.push(agent);
   }
 
   return agents;

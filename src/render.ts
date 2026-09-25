@@ -180,6 +180,13 @@ function messageLine(message: any, fg: (color: any, text: string) => string): st
   return `${fg("success", "✓")} ${fg("toolOutput", `user ${truncate(text, MAX_MESSAGE_PREVIEW_CHARS)}`)}`;
 }
 
+/** A context warning injected by the runner (contextWarning frontmatter): `⚠ alert <text>`. */
+function alertLine(activity: any, fg: (color: any, text: string) => string): string {
+  const text = typeof activity?.text === "string" ? activity.text.replace(/\s+/g, " ").trim() : "";
+  if (!text) return "";
+  return `${fg("warning", "⚠")} ${fg("warning", "alert")} ${fg("toolOutput", truncate(text, MAX_MESSAGE_PREVIEW_CHARS))}`;
+}
+
 function activityOrder(item: any, fallback: number): number {
   return typeof item?.activityOrder === "number" ? item.activityOrder : fallback;
 }
@@ -206,6 +213,7 @@ function totalActivityCount(result: SubagentResult, stored: any[]): number {
 function activityLine(activity: any, fg: (color: any, text: string) => string): string {
   if (activity?.type === "thinking") return thinkingLine(activity, fg);
   if (activity?.type === "message") return messageLine(activity, fg);
+  if (activity?.type === "alert") return alertLine(activity, fg);
   if (activity?.type === "tool") {
     return `${toolIcon(activity, fg)} ${fg(activity?.status === "error" ? "error" : "toolOutput", toolLabel(activity))}${toolErrorSuffix(activity, fg)}`;
   }
