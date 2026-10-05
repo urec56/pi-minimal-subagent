@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { buildActiveAgentBlock } from "./agents.ts";
-import { evaluateContextWarning } from "./context-warning.ts";
+import { selectContextWarning, type ContextWarning } from "./context-warning.ts";
 import { registerActiveRun, unregisterActiveRun } from "./active-runs.ts";
 import { getSubagentProgressText, processPiJsonLine } from "./runner-events.js";
 import {
@@ -47,13 +47,14 @@ export interface RunSubagentOptions {
    */
   onTurnStart?: (runId: number, turnNumber: number) => void;
   /**
-   * Context warning captured at launch (validated agent frontmatter config).
-   * When the run's context fill reaches `percent`, `content` is sent once as
-   * a steer command — same delivery path as /subagent-msg.
+   * Context warnings captured at launch (validated agent frontmatter config),
+   * sorted by `percent` ascending. When the run's context fill reaches an
+   * entry's threshold, its `content` is sent once as a steer command — same
+   * delivery path as /subagent-msg.
    */
-  contextWarning?: { percent: number; content: string };
-  /** Called once, after the stop instruction was actually sent (UI alert). */
-  onContextWarning?: (runId: number, percent: number) => void;
+  contextWarning?: ContextWarning[];
+  /** Called after each stop instruction was actually sent (UI alert). */
+  onContextWarning?: (runId: number, percent: number, threshold: number) => void;
   makeDetails: (results: SubagentResult[]) => SubagentDetails;
 }
 
@@ -340,7 +341,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
       let didClose = false;
       let settled = false;
       let turnsSeen = 0;
-      let contextWarningFired = false;
+      let contextWarningIndex = 0;
       let abortHandler: (() => void) | undefined;
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
 
@@ -390,21 +391,28 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
         }
       };
 
-      // One-shot context warning: fires on the first event where the run's
-      // context fill reaches the configured threshold (same numbers as the
-      // X%/Yk indicator). Content was captured at launch, so sending never
+      // Context warnings: deliver the highest configured threshold the run's
+      // context fill has reached (same numbers as the X%/Yk indicator), at
+      // most once per threshold; a threshold jumped over in one update is
+      // skipped silently. Content was captured at launch, so sending never
       // touches disk. A failed write just means the child is already gone.
       const checkContextWarning = () => {
-        const warning = opts.contextWarning;
-        if (!warning || contextWarningFired) return;
-        const evaluation = evaluateContextWarning(warning, result.contextWindow, result.usage?.contextTokens);
-        if (!evaluation.reached) return;
+        const warnings = opts.contextWarning;
+        if (!warnings || contextWarningIndex >= warnings.length) return;
+        const selection = selectContextWarning(
+          warnings,
+          contextWarningIndex,
+          result.contextWindow,
+          result.usage?.contextTokens,
+        );
+        if (!selection) return;
+        const warning = warnings[selection.index];
         if (writeRpcCommand({ type: "steer", message: warning.content })) {
-          contextWarningFired = true;
+          contextWarningIndex = selection.index + 1;
           // Tag the re-emitted steering message as an alert activity in the
           // event stream so the UI can distinguish it from a human /subagent-msg.
-          result.sentContextAlert = warning.content;
-          if (activeRunId !== undefined) opts.onContextWarning?.(activeRunId, evaluation.percent);
+          result.sentContextAlerts = [...(result.sentContextAlerts ?? []), warning.content];
+          if (activeRunId !== undefined) opts.onContextWarning?.(activeRunId, selection.percent, warning.percent);
         }
       };
 

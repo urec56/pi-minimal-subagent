@@ -86,28 +86,30 @@ Subagents use Pi's default enabled tools. This extension does not read `tools` f
 
 ### Context warning (stop instruction)
 
-By default a subagent runs until it finishes its task. If you want it told to wrap up while there is still context left, configure `contextWarning` in the agent's frontmatter:
+By default a subagent runs until it finishes its task. If you want it told to wrap up while there is still context left, configure `contextWarning` in the agent's frontmatter — a list of thresholds, each with its own instruction file:
 
 ```markdown
 ---
 name: scout
 description: Fast codebase reconnaissance
 contextWarning:
-  percent: 85
-  messageFile: ~/.pi/agent/context-stop.md
+  - percent: 70
+    messageFile: ~/.pi/agent/context-warn.md
+  - percent: 85
+    messageFile: ~/.pi/agent/context-stop.md
 ---
 You are a fast codebase scout. ...
 ```
 
-- `percent` — number in range 0..100 (inclusive) at which the subagent's context fill reaches and the instruction is sent.
-- `messageFile` — `.md` or `.txt` file whose content is sent to the subagent as a *steer* command (the same mechanism `/subagent-msg` uses). Absolute and `~/...` paths are used as-is; relative paths resolve from the session cwd. The file must exist at launch time.
+- `percent` — number in range 0..100 (inclusive) at which the subagent's context fill reaches and the entry's instruction is sent.
+- `messageFile` — `.md` or `.txt` file whose content is sent to the subagent as a *steer* command (the same mechanism `/subagent-msg` uses). Absolute and `~/...` paths are used as-is; relative paths resolve from the session cwd. The file must exist at launch time. The same file may be used for several thresholds.
 
 Behavior:
 
-- Off by default: no key, or an empty `contextWarning:` value, means nothing happens, silently.
-- Validated at every subagent launch. An invalid configuration (non-object block, missing keys, non-number/out-of-range percent, wrong extension, missing file, empty file) never breaks the run — it shows a warning listing all found problems and runs without the feature. Different problems get different messages.
-- The message file is read once at launch and kept in memory; nothing touches disk while the run is in flight.
-- When the subagent's context fill (the same numbers pi's `X%/Yk` indicator shows for the run) reaches `percent`, the file content is sent as-is — once per run, with a warning line in the UI (`#2 scout reached 87.0% of context (threshold 85%) — stop instruction sent`). The delivered instruction appears in the subagent's activity list as an alert line, distinct from human `/subagent-msg` deliveries:
+- Off by default: no key, an empty `contextWarning:` value, or an empty list means nothing happens, silently.
+- Validated at every subagent launch. An invalid configuration (non-list value, non-object entry, missing keys, non-number/out-of-range percent, duplicate percent, wrong extension, missing file, empty file) never breaks the run — it shows a warning listing all found problems and runs without the feature. Different problems get different messages.
+- The message files are read once at launch and kept in memory; nothing touches disk while the run is in flight.
+- Entries fire in ascending `percent` order, each at most once per run. When the subagent's context fill (the same numbers pi's `X%/Yk` indicator shows for the run) reaches an entry's `percent`, the file content is sent as-is, with a warning line in the UI (`#2 scout reached 87.0% of context (threshold 85%) — stop instruction sent`). If the fill jumps past several thresholds in one update, only the highest reached one is sent. The delivered instruction appears in the subagent's activity list as an alert line, distinct from human `/subagent-msg` deliveries:
 
 ```
 ✓ user Do you complete already?   ← /subagent-msg (typed by a person)

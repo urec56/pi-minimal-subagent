@@ -152,7 +152,7 @@ test("a re-emitted context warning steer is recorded as an 'alert' activity", ()
   processPiEvent(userMessageEvent("do work"), result); // task batch — skipped
   processPiEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, result);
   // Raw file content as read from disk (trailing newline, not trimmed).
-  result.sentContextAlert = "STOP — context limit reached\n";
+  result.sentContextAlerts = ["STOP — context limit reached\n"];
 
   assert.equal(processPiEvent(userMessageEvent("STOP — context limit reached"), result), true);
 
@@ -162,11 +162,24 @@ test("a re-emitted context warning steer is recorded as an 'alert' activity", ()
   assert.match(getForkProgressText(result), /⚠ alert STOP — context limit reached/);
 });
 
-test("a /subagent-msg stays a 'user' line even when a context alert was also sent", () => {
+test("any of several sent context warnings is recorded as an 'alert' activity", () => {
   const result = baseResult();
   processPiEvent(userMessageEvent("do work"), result); // task batch — skipped
   processPiEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, result);
-  result.sentContextAlert = "STOP — context limit reached";
+  result.sentContextAlerts = ["Start wrapping up.", "STOP — context limit reached"];
+
+  assert.equal(processPiEvent(userMessageEvent("Start wrapping up."), result), true);
+
+  const activities = result.activities;
+  assert.deepEqual(activities.map((activity) => activity.type), ["tool", "alert"]);
+  assert.equal(activities[1].text, "Start wrapping up.");
+});
+
+test("a /subagent-msg stays a 'user' line even when context alerts were also sent", () => {
+  const result = baseResult();
+  processPiEvent(userMessageEvent("do work"), result); // task batch — skipped
+  processPiEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, result);
+  result.sentContextAlerts = ["Start wrapping up.", "STOP — context limit reached"];
 
   assert.equal(processPiEvent(userMessageEvent("Do one more thing"), result), true);
 

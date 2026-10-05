@@ -111,10 +111,11 @@ export interface SubagentResult {
   /** True when an `agent_settled` event was seen (full session quiescence). */
   sawAgentSettled?: boolean;
   /**
-   * Context warning content the runner sent as a steer mid-run. Used to tag
-   * its re-emission in the child event stream as an `alert` activity.
+   * Contents of the context warnings the runner sent as steers mid-run, in
+   * delivery order. Used to tag their re-emissions in the child event stream
+   * as `alert` activities.
    */
-  sentContextAlert?: string;
+  sentContextAlerts?: string[];
   thinking?: ThinkingState;
   activityCount?: number;
   activities?: Activity[];

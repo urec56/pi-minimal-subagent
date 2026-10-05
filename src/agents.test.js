@@ -19,17 +19,19 @@ function writeAgent(dir, file, content) {
   return filePath;
 }
 
-test("nested contextWarning frontmatter block is captured as raw value", () => {
+test("nested contextWarning frontmatter list is captured as raw value", () => {
   const { root, agentsDir } = makeProjectAgentDir();
   writeAgent(
     agentsDir,
     "scout.md",
     `---
 name: scout-cw-test
-description: Agent with a context warning
+description: Agent with context warnings
 contextWarning:
-  percent: 85.5
-  messageFile: ~/ctx-stop.md
+  - percent: 70
+    messageFile: ~/ctx-warn.md
+  - percent: 85.5
+    messageFile: ~/ctx-stop.md
 ---
 You are a test agent.
 `,
@@ -38,7 +40,10 @@ You are a test agent.
   const { agents } = discoverAgents(root);
   const agent = agents.find((candidate) => candidate.name === "scout-cw-test");
   assert.ok(agent, "agent with contextWarning frontmatter should be discovered");
-  assert.deepEqual(agent.contextWarning, { percent: 85.5, messageFile: "~/ctx-stop.md" });
+  assert.deepEqual(agent.contextWarning, [
+    { percent: 70, messageFile: "~/ctx-warn.md" },
+    { percent: 85.5, messageFile: "~/ctx-stop.md" },
+  ]);
 });
 
 test("empty contextWarning key is captured as null (not configured)", () => {

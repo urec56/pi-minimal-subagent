@@ -400,10 +400,10 @@ function syncThinkingState(result, activity) {
  * whose text happens to equal the task is indistinguishable and stays
  * unrecorded.
  *
- * The context warning steer is sent by the runner itself: its re-emission is
- * recorded as an "alert" activity instead, so the UI renders `⚠ alert` rather
- * than `✓ user`. Matching is whitespace-insensitive because the stored file
- * content may carry trailing newlines while the re-emitted text is trimmed.
+ * The context warning steers are sent by the runner itself: their re-emissions
+ * are recorded as "alert" activities instead, so the UI renders `⚠ alert`
+ * rather than `✓ user`. Matching is whitespace-insensitive because the stored
+ * file content may carry trailing newlines while the re-emitted text is trimmed.
  */
 function addUserMessageActivity(result, message) {
   if (!message || typeof message !== "object") return false;
@@ -411,7 +411,8 @@ function addUserMessageActivity(result, message) {
   if (!text) return false;
   if (typeof result.task === "string" && text === result.task) return false;
   const isContextAlert =
-    typeof result.sentContextAlert === "string" && text === result.sentContextAlert.trim();
+    Array.isArray(result.sentContextAlerts) &&
+    result.sentContextAlerts.some((stored) => typeof stored === "string" && text === stored.trim());
   addActivity(result, {
     type: isContextAlert ? "alert" : "message",
     status: "completed",
