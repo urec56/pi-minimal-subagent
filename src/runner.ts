@@ -7,6 +7,7 @@ import { buildActiveAgentBlock } from "./agents.ts";
 import { selectContextWarning, type ContextWarning } from "./context-warning.ts";
 import { registerActiveRun, unregisterActiveRun } from "./active-runs.ts";
 import { getSubagentProgressText, processPiJsonLine } from "./runner-events.js";
+import { createUtf8LineReader } from "./utf8-lines.ts";
 import {
   type AgentConfig,
   type Settings,
@@ -337,11 +338,17 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
       // error/close handlers finish the run.
       writeRpcCommand({ type: "prompt", message: task });
 
-      let buffer = "";
       let didClose = false;
       let settled = false;
       let turnsSeen = 0;
       let contextWarningIndex = 0;
+      // Raw-byte line reader (see utf8-lines.ts): a multi-byte UTF-8
+      // character can be split across two `data` chunks, and decoding chunks
+      // independently would replace it with U+FFFD, corrupting event
+      // signatures and breaking message dedup.
+      const lineReader = createUtf8LineReader((line) => {
+        if (line.trim()) flushLine(line);
+      });
       let abortHandler: (() => void) | undefined;
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
 
@@ -440,12 +447,6 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
         maybeFinishOnSemanticCompletion();
       };
 
-      const flushBufferedLines = (text: string) => {
-        for (const line of text.split(/\r?\n/)) {
-          if (line.trim()) flushLine(line);
-        }
-      };
-
       const maybeFinishOnSemanticCompletion = () => {
         // agent_settled (RPC mode: full quiescence, no queued continuations)
         // or a non-retrying agent_end as the fallback for older pi versions.
@@ -453,10 +454,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
         clearSemanticCompletionTimer();
         semanticCompletionTimer = setTimeout(() => {
           if (didClose || settled || !(result.sawAgentSettled || result.sawAgentEnd)) return;
-          if (buffer.trim()) {
-            flushBufferedLines(buffer);
-            buffer = "";
-          }
+          lineReader.flush();
           proc.stdout.removeListener("data", onStdoutData);
           proc.stderr.removeListener("data", onStderrData);
           finish(0);
@@ -467,10 +465,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
 
       const onStdoutData = (chunk: Buffer) => {
         appendArtifact(result.stdoutArtifact, chunk);
-        buffer += chunk.toString();
-        const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() || "";
-        for (const line of lines) flushLine(line);
+        lineReader.push(chunk);
       };
 
       const onStderrData = (chunk: Buffer) => {
@@ -483,7 +478,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
 
       proc.on("close", (code) => {
         didClose = true;
-        if (buffer.trim()) flushBufferedLines(buffer);
+        lineReader.flush();
         finish(code ?? 0);
       });
 

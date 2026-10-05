@@ -187,3 +187,62 @@ test("a /subagent-msg stays a 'user' line even when context alerts were also sen
   assert.deepEqual(activities.map((activity) => activity.type), ["tool", "message"]);
   assert.match(getForkProgressText(result), /✓ user Do one more thing/);
 });
+
+// --- agent_end history replay: dedup must survive content corruption -------
+// The agent_end event re-sends the full session history. A copy whose text
+// was corrupted in transit (e.g. U+FFFD from a UTF-8 character split across
+// stdout chunks) has a different content signature, but the same responseId —
+// it must still be recognized as a duplicate.
+
+function assistantResponse(text, totalTokens, responseId) {
+  return {
+    role: "assistant",
+    responseId,
+    content: [{ type: "text", text }],
+    usage: {
+      input: 46,
+      output: 8042,
+      cacheRead: totalTokens - 8088,
+      cacheWrite: 0,
+      totalTokens,
+    },
+  };
+}
+
+test("a corrupted agent_end copy of a seen response is not re-added", () => {
+  const result = baseResult();
+  const live = assistantResponse("Now `tests/top_history_ch_test.go`:", 214718, "chatcmpl-abc");
+  processPiEvent({ type: "message_end", message: live }, result);
+  const newer = assistantResponse("Прогресс-комментарий оставлен", 241680, "chatcmpl-new");
+  processPiEvent({ type: "message_end", message: newer }, result);
+  assert.equal(result.messages.length, 2);
+  assert.equal(result.usage.contextTokens, 241680);
+
+  // agent_end replay: same responses, but a chunk-split UTF-8 character
+  // turned "дневные" into "днев\uFFFD\uFFFDые" in the first copy.
+  const corruptedCopy = {
+    ...live,
+    content: [{ type: "text", text: "Now `tests/top_history_ch_test.go`: днев\uFFFD\uFFFDые" }],
+  };
+  assert.equal(processPiEvent({ type: "agent_end", messages: [corruptedCopy, newer] }, result), false);
+
+  assert.equal(result.messages.length, 2);
+  assert.equal(result.usage.contextTokens, 241680);
+  assert.equal(result.usage.turns, 2);
+  assert.equal(result.messages[1].content[0].text, "Прогресс-комментарий оставлен");
+});
+
+test("a stale message re-added late cannot lower contextTokens", () => {
+  const result = baseResult();
+  processPiEvent({ type: "message_end", message: assistantResponse("old", 214718, "r1") }, result);
+  processPiEvent({ type: "message_end", message: assistantResponse("new", 241680, "r2") }, result);
+  assert.equal(result.usage.contextTokens, 241680);
+
+  // A stale copy whose responseId was also corrupted (worst case: both dedup
+  // layers miss) is added, but the indicator must stay monotonic.
+  processPiEvent({
+    type: "agent_end",
+    messages: [assistantResponse("old \uFFFD", 214718, "r1-corrupted")],
+  }, result);
+  assert.equal(result.usage.contextTokens, 241680);
+});

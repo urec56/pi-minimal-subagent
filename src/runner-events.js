@@ -34,6 +34,18 @@ function getSeenForkToolResultSignatures(result) {
   return result.__seenForkToolResultSignatures;
 }
 
+function getSeenResponseIds(result) {
+  if (!Object.prototype.hasOwnProperty.call(result, "__seenResponseIds")) {
+    Object.defineProperty(result, "__seenResponseIds", {
+      value: new Set(),
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
+  return result.__seenResponseIds;
+}
+
 function stableStringify(value) {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value);
@@ -201,7 +213,18 @@ function addAssistantMessage(result, message) {
   const signature = stableStringify(sanitizedMessage);
   const seen = getSeenMessageSignatures(result);
   if (seen.has(signature)) return false;
+  // Response-level dedup: the agent_end history replay can carry a copy of
+  // an already-seen response whose content was corrupted in transit (e.g.
+  // U+FFFD from a UTF-8 character split across stdout chunks). Its content
+  // signature then misses, but the responseId (plain ASCII, never corrupted)
+  // still identifies the same LLM response.
+  const responseId = typeof message.responseId === "string" && message.responseId
+    ? message.responseId
+    : undefined;
+  const seenResponseIds = responseId ? getSeenResponseIds(result) : undefined;
+  if (responseId && seenResponseIds.has(responseId)) return false;
   seen.add(signature);
+  if (responseId) seenResponseIds.add(responseId);
 
   result.messages.push(sanitizedMessage);
 
@@ -214,9 +237,12 @@ function addAssistantMessage(result, message) {
     result.usage.cacheWrite += usage.cacheWrite || 0;
     result.usage.cost += usageCost(usage.cost);
     // Mirror pi's calculateContextTokens: native totalTokens when available,
-    // otherwise the sum of components.
-    result.usage.contextTokens =
+    // otherwise the sum of components. Monotonic (Math.max, like
+    // addNestedForkUsage): a stale message re-added late (e.g. from the
+    // agent_end history replay) must not be able to lower the indicator.
+    const contextTokens =
       usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+    result.usage.contextTokens = Math.max(result.usage.contextTokens || 0, contextTokens);
   }
 
   return true;
